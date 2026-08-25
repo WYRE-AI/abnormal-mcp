@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.wyre-technology/abnormal-mcp",
+  "name": "io.github.WYRE-AI/abnormal-mcp",
   "title": "Abnormal Security",
   "description": "MCP server for Abnormal Security — AI-powered email threat detection, cases, and remediation.",
   "repository": {
-    "url": "https://github.com/wyre-technology/abnormal-mcp",
+    "url": "https://github.com/WYRE-AI/abnormal-mcp",
     "source": "github"
   },
   "version": "0.0.0",
-  "websiteUrl": "https://github.com/wyre-technology/abnormal-mcp",
+  "websiteUrl": "https://github.com/WYRE-AI/abnormal-mcp",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/wyre-technology/abnormal-mcp:0.0.0",
+      "identifier": "ghcr.io/wyre-ai/abnormal-mcp:0.0.0",
       "transport": {
         "type": "stdio"
       },

@@ -3,12 +3,12 @@
 
 ### Bug Fixes
 
-* **ci:** deploy :latest tag, force revision via env var bump ([6bdfc63](https://github.com/wyre-technology/abnormal-mcp/commit/6bdfc6378848815eb7ebd3981412b8fbf4c9324e))
+* **ci:** deploy :latest tag, force revision via env var bump ([6bdfc63](https://github.com/WYRE-AI/abnormal-mcp/commit/6bdfc6378848815eb7ebd3981412b8fbf4c9324e))
 
 
 ### Features
 
-* **init:** scaffold Abnormal Security MCP server ([a9df46f](https://github.com/wyre-technology/abnormal-mcp/commit/a9df46f30e7741963e2c4ffa3f6ef2232cbf323a))
+* **init:** scaffold Abnormal Security MCP server ([a9df46f](https://github.com/WYRE-AI/abnormal-mcp/commit/a9df46f30e7741963e2c4ffa3f6ef2232cbf323a))
 
 # Changelog
 

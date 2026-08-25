@@ -7,11 +7,11 @@
   "long_description": "Provides Claude with tools to interact with the Abnormal Security API. Supports listing and inspecting threats, analysing individual emails, triggering remediations, reviewing abuse mailbox reports, and managing security investigation cases.",
   "author": {
     "name": "Wyre Technology",
-    "url": "https://github.com/wyre-technology"
+    "url": "https://github.com/WYRE-AI"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/wyre-technology/abnormal-mcp"
+    "url": "https://github.com/WYRE-AI/abnormal-mcp"
   },
   "license": "Apache-2.0",
   "keywords": ["abnormal", "abnormal-security", "security", "mcp", "email-security"],
