@@ -226,7 +226,6 @@ describe("HTTP startup", () => {
   it.each([
     "changeme",
     "change-me",
-    "secret",
     "example",
     "replace-me",
     "s2s-secret",
@@ -252,22 +251,26 @@ describe("HTTP startup", () => {
     }
   });
 
-  it("refuses the placeholder value itself and does not echo it", async () => {
-    process.env.CONDUIT_S2S_SECRET = "placeholder";
-    const logs = captureStderr();
-    const exit = exitSpy();
+  it.each(["placeholder", "secret"])(
+    "refuses known placeholder %s without echoing the configured value",
+    async (placeholder) => {
+      process.env.CONDUIT_S2S_SECRET = placeholder;
+      const logs = captureStderr();
+      const exit = exitSpy();
 
-    try {
-      await expect(startHttpTransport()).rejects.toThrow("process.exit:1");
-      const text = logs.text();
-      expect(text).toContain("known placeholder");
-      expect(text).not.toContain("CONDUIT_S2S_SECRET=placeholder");
-      expect(text).not.toMatch(/secret is ["']?placeholder/i);
-    } finally {
-      exit.mockRestore();
-      logs.restore();
-    }
-  });
+      try {
+        await expect(startHttpTransport()).rejects.toThrow("process.exit:1");
+        const text = logs.text();
+        expect(text).toContain("known placeholder");
+        expect(text).not.toContain(`CONDUIT_S2S_SECRET=${placeholder}`);
+        expect(text).not.toContain(`'${placeholder}'`);
+        expect(text).not.toContain(`"${placeholder}"`);
+      } finally {
+        exit.mockRestore();
+        logs.restore();
+      }
+    },
+  );
 
   it("refuses a placeholder even when MCP_ALLOW_INSECURE_DEV=1", async () => {
     process.env.CONDUIT_S2S_SECRET = "  Your-S2S-Secret  ";
