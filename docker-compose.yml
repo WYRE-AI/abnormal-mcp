@@ -1,14 +1,20 @@
 services:
+  # Gateway mode. The API token arrives per request on Authorization.
+  # Do not set ABNORMAL_API_TOKEN or env_file here — that would put a static
+  # vendor credential in the container. The project .env is used only for
+  # Compose interpolation of CONDUIT_S2S_SECRET. For AUTH_MODE=env, pass
+  # ABNORMAL_API_TOKEN on that process instead (see the README).
   abnormal-mcp:
     build:
       context: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - MCP_TRANSPORT=http
       - MCP_HTTP_PORT=8080
-      - AUTH_MODE=${AUTH_MODE:-env}
-      - ABNORMAL_API_TOKEN=${ABNORMAL_API_TOKEN}
+      - MCP_HTTP_HOST=0.0.0.0
+      - AUTH_MODE=gateway
+      - CONDUIT_S2S_SECRET=${CONDUIT_S2S_SECRET:?set CONDUIT_S2S_SECRET}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production
     healthcheck:

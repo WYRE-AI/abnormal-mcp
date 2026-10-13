@@ -49,9 +49,12 @@ ENV NODE_ENV=production
 ENV LOG_LEVEL=info
 ENV MCP_TRANSPORT=http
 ENV MCP_HTTP_PORT=8080
+# All interfaces inside the container. Startup still refuses to run unless
+# CONDUIT_S2S_SECRET is a real secret. MCP_ALLOW_INSECURE_DEV=1 does not
+# honor this host: that bypass binds 127.0.0.1 only.
 ENV MCP_HTTP_HOST=0.0.0.0
-# Set to 'gateway' for hosted deployment; 'env' for standalone use
-ENV AUTH_MODE=env
+# Gateway mode reads the Abnormal token from the Authorization header only.
+ENV AUTH_MODE=gateway
 
 VOLUME ["/app/logs"]
 

@@ -59,7 +59,36 @@ This server uses a decision-tree architecture. Start by calling `abnormal_naviga
 
 ## Authentication
 
-Abnormal Security uses Bearer token authentication.
+Abnormal Security uses Bearer token authentication. Copy [`.env.example`](.env.example) and set the variables below.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ABNORMAL_API_TOKEN` | For stdio and `AUTH_MODE=env` | Abnormal Security API token. Generate it in the Abnormal portal under **Settings > Integrations > API**. |
+| `MCP_TRANSPORT` | No | `stdio` (default) or `http` |
+| `AUTH_MODE` | No | `env` (default outside Docker) or `gateway`. The image and Compose service set `gateway`. Gateway mode requires `Authorization: Bearer` on each `/mcp` request and never falls back to `ABNORMAL_API_TOKEN`. |
+| `CONDUIT_S2S_SECRET` | Yes for HTTP | Service-to-service secret. Generate one with `openssl rand -hex 32`. The HTTP server logs an error and exits non-zero when this is empty or a known placeholder (`changeme`, `placeholder`, `your-s2s-secret`, `replace-with-a-real-secret`, and similar example values). Compose will not start without it. Never commit a real value. The value is never logged. |
+| `MCP_ALLOW_INSECURE_DEV` | No | Set to exactly `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, does not enforce `X-Gateway-S2S`, and binds `127.0.0.1` only. A non-loopback `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored and the override is logged. A known placeholder secret is still refused. |
+| `MCP_HTTP_HOST` | No | Bind address when `MCP_TRANSPORT=http`. Defaults to `127.0.0.1` when unset. A configured secret honors this value. The container image sets `0.0.0.0`. With no secret, the insecure-dev bypass forces `127.0.0.1`. |
+| `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
+
+`/health` stays unauthenticated and does not read credentials. The stdio transport does not use `CONDUIT_S2S_SECRET`.
+
+### X-Gateway-S2S signing
+
+With `MCP_TRANSPORT=http` and a real `CONDUIT_S2S_SECRET`, every `/mcp` request must include `X-Gateway-S2S`. The header value is `t=<unix seconds>,v1=<hex>`, where the hex is HMAC-SHA256 of the literal string `t=<unix seconds>` keyed with `CONDUIT_S2S_SECRET` (64 lowercase hex characters). The timestamp must be within 300 seconds of the server clock. A missing or invalid header returns 401 before the Abnormal token is read.
+
+```bash
+TS=$(date +%s)
+SIG=$(printf 't=%s' "$TS" | openssl dgst -sha256 -hmac "$CONDUIT_S2S_SECRET" -hex | awk '{print $NF}')
+curl -sS http://127.0.0.1:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "X-Gateway-S2S: t=${TS},v1=${SIG}" \
+  -H "Authorization: Bearer $ABNORMAL_API_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+In `AUTH_MODE=gateway` that `Authorization` header is required and is the only credential source. `AUTH_MODE=env` still requires a valid `X-Gateway-S2S` header, then uses `ABNORMAL_API_TOKEN` from the environment when the request does not carry `Authorization`.
 
 ### Standalone (env mode)
 
@@ -68,11 +97,9 @@ export ABNORMAL_API_TOKEN=your-api-token
 node dist/index.js
 ```
 
-Generate your token in the Abnormal portal under **Settings > Integrations > API**.
-
 ### Gateway mode
 
-When deployed behind the MCP gateway, set `AUTH_MODE=gateway`. The gateway injects the `Authorization: Bearer {token}` header automatically on each request.
+When deployed behind the MCP gateway, set `AUTH_MODE=gateway`. The gateway signs each `/mcp` request with `X-Gateway-S2S` and injects `Authorization: Bearer {token}`. Requests missing that credential header are rejected with 401.
 
 ## Running
 
@@ -86,14 +113,45 @@ node dist/index.js
 
 ### HTTP Streamable (for hosted/gateway deployment)
 
+HTTP refuses to start until `CONDUIT_S2S_SECRET` is a real secret:
+
 ```bash
-MCP_TRANSPORT=http AUTH_MODE=gateway node dist/index.js
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" MCP_TRANSPORT=http AUTH_MODE=gateway node dist/index.js
+```
+
+Local HTTP without a secret is development-only. It binds `127.0.0.1` only and logs a warning:
+
+```bash
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 npm run start:http
 ```
 
 ### Docker
 
+The image listens on `0.0.0.0` inside the container (`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Publish the port on loopback and pass the S2S secret. In gateway mode the API token arrives on each request as `Authorization`; the image does not read `ABNORMAL_API_TOKEN`.
+
 ```bash
-docker compose up
+docker build -t abnormal-mcp .
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -p 127.0.0.1:8080:8080 \
+  abnormal-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset, sets `AUTH_MODE=gateway`, does not inject `ABNORMAL_API_TOKEN`, and publishes `127.0.0.1:8080:8080`:
+
+```bash
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses `ABNORMAL_API_TOKEN`:
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -e AUTH_MODE=env \
+  -e ABNORMAL_API_TOKEN=your-api-token \
+  -p 127.0.0.1:8080:8080 \
+  abnormal-mcp
 ```
 
 ## Development

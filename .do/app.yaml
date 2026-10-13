@@ -13,6 +13,9 @@ services:
       - key: ABNORMAL_API_TOKEN
         scope: RUN_TIME
         type: SECRET
+      - key: CONDUIT_S2S_SECRET
+        scope: RUN_TIME
+        type: SECRET
       - key: MCP_TRANSPORT
         scope: RUN_TIME
         value: http
