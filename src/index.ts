@@ -14,6 +14,15 @@
  * Auth:       Set AUTH_MODE=gateway for header-based credential injection from
  *             the MCP gateway (gateway injects Authorization: Bearer {token}).
  *             Set AUTH_MODE=env (default) and ABNORMAL_API_TOKEN for standalone use.
+ *             Gateway mode never falls back to ABNORMAL_API_TOKEN.
+ *
+ * HTTP transport refuses to start unless CONDUIT_S2S_SECRET is a real secret.
+ * Known placeholders are rejected. MCP_ALLOW_INSECURE_DEV=1 is a local-only
+ * escape hatch: it logs a warning, skips X-Gateway-S2S, and listens on
+ * 127.0.0.1 only. With a configured secret, MCP_HTTP_HOST is honored.
+ * The listen address defaults to 127.0.0.1 when unset.
+ * /health stays unauthenticated and does not read credentials.
+ * stdio does not use S2S auth.
  *
  * SECURITY: The HTTP transport is STATELESS (sessionIdGenerator: undefined).
  * Each request gets a fresh Server + StreamableHTTPServerTransport that is
@@ -21,7 +30,7 @@
  * AsyncLocalStorage (runWithCredentials) — never via process.env mutation.
  */
 
-import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
+import { createServer as createHttpServer, IncomingMessage, Server as HttpServer, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -41,11 +50,98 @@ import { runWithCredentials } from "./utils/client.js";
 import { logger } from "./utils/logger.js";
 import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
 
-// Conduit service-to-service auth (gateway#377 parity). Non-empty =
-// enforce X-Gateway-S2S on every /mcp request; empty = disabled, behavior
-// exactly as before (dark-by-default until the gateway provisions this
-// container's derived subkey). See src/s2s-verify.ts.
-const S2S_SECRET = process.env.CONDUIT_S2S_SECRET || "";
+const LOOPBACK_HOST = "127.0.0.1";
+
+/**
+ * Public example values. A copied placeholder must not verify as a real
+ * secret: anyone who can reach /mcp could mint a matching X-Gateway-S2S.
+ */
+const KNOWN_PLACEHOLDER_SECRETS = new Set([
+  "replace-with-a-real-secret",
+  "your-s2s-secret",
+  "your-secret",
+  "changeme",
+  "change-me",
+  "placeholder",
+  "secret",
+  "example",
+  "replace-me",
+  "s2s-secret",
+]);
+
+const MISSING_S2S_SECRET_ERROR =
+  "Refusing to start HTTP transport: CONDUIT_S2S_SECRET is empty. " +
+  "Set CONDUIT_S2S_SECRET to the gateway-provisioned secret (openssl rand -hex 32), " +
+  "or set MCP_ALLOW_INSECURE_DEV=1 for local development only.";
+
+const PLACEHOLDER_S2S_SECRET_ERROR =
+  "Refusing to start HTTP transport: CONDUIT_S2S_SECRET is a known placeholder. " +
+  "Generate a secret with `openssl rand -hex 32` and set CONDUIT_S2S_SECRET to that value.";
+
+const INSECURE_DEV_WARNING =
+  "SECURITY WARNING: CONDUIT_S2S_SECRET is unset and MCP_ALLOW_INSECURE_DEV=1. " +
+  "HTTP /mcp is starting with service-to-service authentication DISABLED, bound to 127.0.0.1 only. " +
+  "Local development only; do not expose this port.";
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[(.+)\]$/, "$1");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  const bare = normalized.startsWith("::ffff:") ? normalized.slice("::ffff:".length) : normalized;
+  const parts = bare.split(".");
+  if (parts.length !== 4) return false;
+  if (parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return false;
+  return parts[0] === "127";
+}
+
+function headerString(value: string | string[] | undefined): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.find((item) => item.length > 0);
+  return undefined;
+}
+
+/** Raw Abnormal API token from Authorization, or undefined when the header is missing or blank. */
+function bearerToken(authorization: string | undefined): string | undefined {
+  if (!authorization) return undefined;
+  const trimmed = authorization.trim();
+  if (!trimmed || /^bearer$/i.test(trimmed)) return undefined;
+  const token = /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, "").trim() : trimmed;
+  return token.length > 0 ? token : undefined;
+}
+
+/**
+ * Secret for X-Gateway-S2S on /mcp, read at HTTP startup rather than module load.
+ * Empty is fail-closed unless MCP_ALLOW_INSECURE_DEV=1, which forces 127.0.0.1.
+ * A known placeholder always refuses to start. The secret value is never logged.
+ * A configured secret honors MCP_HTTP_HOST; an unset host defaults to 127.0.0.1.
+ */
+function resolveHttpStartup(): { secret: string; host: string } {
+  const raw = (process.env.CONDUIT_S2S_SECRET ?? "").trim();
+  if (KNOWN_PLACEHOLDER_SECRETS.has(raw.toLowerCase())) {
+    logger.error(PLACEHOLDER_S2S_SECRET_ERROR);
+    process.exit(1);
+  }
+
+  const configuredHost = (process.env.MCP_HTTP_HOST ?? "").trim();
+
+  if (!raw) {
+    if (process.env.MCP_ALLOW_INSECURE_DEV === "1") {
+      if (configuredHost !== "" && !isLoopbackHost(configuredHost)) {
+        logger.error(
+          `WARNING: MCP_HTTP_HOST=${configuredHost} is not a loopback address. ` +
+            "MCP_ALLOW_INSECURE_DEV=1 without CONDUIT_S2S_SECRET cannot listen there. " +
+            `Binding ${LOOPBACK_HOST} only.`,
+        );
+      }
+      logger.error(INSECURE_DEV_WARNING);
+      return { secret: "", host: LOOPBACK_HOST };
+    }
+
+    logger.error(MISSING_S2S_SECRET_ERROR);
+    process.exit(1);
+  }
+
+  return { secret: raw, host: configuredHost === "" ? LOOPBACK_HOST : configuredHost };
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -277,9 +373,9 @@ async function startStdioTransport(): Promise<void> {
   logger.info("Abnormal Security MCP server running on stdio");
 }
 
-async function startHttpTransport(): Promise<void> {
+export async function startHttpTransport(): Promise<HttpServer> {
   const port = parseInt(process.env.MCP_HTTP_PORT || "8080", 10);
-  const host = process.env.MCP_HTTP_HOST || "0.0.0.0";
+  const { secret: s2sSecret, host } = resolveHttpStartup();
   const authMode = (process.env.AUTH_MODE as AuthMode) || "env";
   const isGatewayMode = authMode === "gateway";
 
@@ -289,7 +385,7 @@ async function startHttpTransport(): Promise<void> {
       `http://${req.headers.host || "localhost"}`
     );
 
-    // Health check — no auth required
+    // Health check — no auth required, and this handler must not read credentials.
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
@@ -305,7 +401,10 @@ async function startHttpTransport(): Promise<void> {
 
     // MCP endpoint — STATELESS: fresh server+transport per request
     if (url.pathname === "/mcp") {
-      if (S2S_SECRET && !verifyS2sHeader(req.headers[S2S_HEADER] as string | undefined, S2S_SECRET)) {
+      // Empty s2sSecret is only reachable when MCP_ALLOW_INSECURE_DEV=1; startup
+      // refuses otherwise. A configured secret is always enforced, before any
+      // credential extraction.
+      if (s2sSecret && !verifyS2sHeader(headerString(req.headers[S2S_HEADER]), s2sSecret)) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
@@ -316,10 +415,13 @@ async function startHttpTransport(): Promise<void> {
       }
 
       if (isGatewayMode) {
-        // Gateway injects Authorization: Bearer {token} directly
-        const authorization = req.headers["authorization"] as string | undefined;
+        // Gateway injects Authorization: Bearer {token} on every request.
+        // Reject when it is missing. Falling through would resolve
+        // ABNORMAL_API_TOKEN from the process environment, which is not
+        // request-scoped.
+        const apiToken = bearerToken(headerString(req.headers["authorization"]));
 
-        if (!authorization) {
+        if (!apiToken) {
           logger.error("Gateway mode: missing Authorization header");
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(
@@ -331,11 +433,6 @@ async function startHttpTransport(): Promise<void> {
           );
           return;
         }
-
-        // Strip "Bearer " prefix to get the raw token for the ALS credential store
-        const apiToken = authorization.startsWith("Bearer ")
-          ? authorization.slice(7)
-          : authorization;
 
         // SECURITY-CRITICAL: wrap the entire request lifecycle in the
         // per-request ALS context. No process.env mutation — credentials are
@@ -376,7 +473,8 @@ async function startHttpTransport(): Promise<void> {
     );
   });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", reject);
     httpServer.listen(port, host, () => {
       logger.info(`Abnormal Security MCP server listening on http://${host}:${port}/mcp`);
       logger.info(`Health check: http://${host}:${port}/health`);
@@ -387,16 +485,7 @@ async function startHttpTransport(): Promise<void> {
     });
   });
 
-  const shutdown = async () => {
-    logger.info("Shutting down Abnormal Security MCP server...");
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((err) => (err ? reject(err) : resolve()));
-    });
-    process.exit(0);
-  };
-
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  return httpServer;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -406,23 +495,36 @@ async function main() {
     (process.env.MCP_TRANSPORT as TransportType) || "stdio";
 
   if (transportType === "http") {
-    await startHttpTransport();
+    const httpServer = await startHttpTransport();
+    const shutdown = async () => {
+      logger.info("Shutting down Abnormal Security MCP server...");
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((err) => (err ? reject(err) : resolve()));
+      });
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   } else {
     await startStdioTransport();
   }
 }
 
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled rejection", { promise: String(promise), reason: String(reason) });
-  process.exit(1);
-});
+// Vitest imports this module to call startHttpTransport. Skip the CLI
+// entrypoint there. `node dist/index.js` still starts stdio or HTTP.
+if (process.env.VITEST !== "true") {
+  process.on("unhandledRejection", (reason, promise) => {
+    logger.error("Unhandled rejection", { promise: String(promise), reason: String(reason) });
+    process.exit(1);
+  });
 
-process.on("uncaughtException", (error) => {
-  logger.error("Uncaught exception", { error: error.message });
-  process.exit(1);
-});
+  process.on("uncaughtException", (error) => {
+    logger.error("Uncaught exception", { error: error.message });
+    process.exit(1);
+  });
 
-main().catch((err) => {
-  logger.error("Startup failed", { error: (err as Error).message });
-  process.exit(1);
-});
+  main().catch((err) => {
+    logger.error("Startup failed", { error: (err as Error).message });
+    process.exit(1);
+  });
+}
