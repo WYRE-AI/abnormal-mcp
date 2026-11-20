@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The HTTP transport no longer exits on a malformed request (WYREAI-741).** The request
+  target was parsed against the client-supplied `Host` header, and a value that does not parse
+  (or a target such as `//`) threw inside the request listener before authentication. The
+  target is now parsed against a fixed base, so `Host` is no longer consulted, and a target
+  that still cannot be parsed gets a `400` JSON response while the server keeps running.
+
 ### Added
 
 - **Interactive threat card via MCP Apps (SEP-1865).** `abnormal_threats_get` results now render as an interactive card in MCP Apps hosts (Claude Desktop/web, and other hosts advertising the `io.modelcontextprotocol/ui` extension), instead of a wall of JSON. The card shows the threat's subject, sender, recipient, attack type/strategy/vector, impersonated party, remediation status, and the recent messages in the threat. The card is **read-only** by policy — email-security remediation stays a deliberate, model-mediated action (`abnormal_remediation_manage`), never a one-click card button. Non-App hosts are unaffected: the tool's JSON payload is unchanged apart from a new `_card` field.
